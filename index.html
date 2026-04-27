@@ -223,6 +223,7 @@
   <button class="tab" onclick="switchTab('scores',this)">All Scores</button>
   <button class="tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
   <button class="tab" onclick="switchTab('weekly',this)">Weekly Report</button>
+  <button class="tab" onclick="switchTab('alltime',this)">All-Time Report</button>
   <button class="tab" onclick="switchTab('players',this)">Players</button>
   <button class="tab" onclick="switchTab('settings',this)">⚙ Settings</button>
 </div>
@@ -322,6 +323,17 @@
   <div id="week-empty" style="color:var(--muted);font-size:0.9rem;">No scores recorded yet.</div>
 </div>
 
+<div id="tab-alltime" class="panel">
+  <div style="display:flex;gap:1rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;">
+    <button class="btn" onclick="downloadAllTimeReport()">Download as Image</button>
+    <button class="btn secondary" onclick="loadData();setTimeout(renderAllTimeReport,500)">↻ Refresh</button>
+  </div>
+  <div id="alltime-canvas-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;margin-bottom:1.5rem;display:none;overflow-x:auto;">
+    <div id="alltime-graphic"></div>
+  </div>
+  <div id="alltime-empty" style="color:var(--muted);font-size:0.9rem;">No scores recorded yet.</div>
+</div>
+
 <div id="tab-players" class="panel">
   <div class="entry-card">
     <h2>Players</h2>
@@ -404,6 +416,7 @@ function switchTab(name, btn) {
   if (name === 'scores') { populateFilters(); renderScoresTable(); }
   if (name === 'leaderboard') renderLeaderboard();
   if (name === 'weekly') { populateWeekSelect(); renderWeeklyReport(); }
+  if (name === 'alltime') renderAllTimeReport();
   if (name === 'players') renderPlayers();
   if (name === 'settings') document.getElementById('script-url-input').value = scriptUrl;
 }
@@ -648,7 +661,6 @@ function renderLeaderboard() {
   });
 
   document.getElementById('lb-stats').innerHTML = `
-    <div class="stat-card"><div class="label">Total games</div><div class="value">${scores.length}</div></div>
     <div class="stat-card"><div class="label">Players</div><div class="value">${state.players.length}</div></div>
     <div class="stat-card"><div class="label">Highest score</div><div class="value">${scores.length?Math.max(...scores.map(s=>s.final)):'—'}</div></div>
   `;
@@ -737,6 +749,115 @@ async function downloadReport() {
     const canvas = await html2canvas(el, { backgroundColor:'#0f1117', scale:2 });
     const a = document.createElement('a');
     a.download = 'maptap-weekly-report.png'; a.href = canvas.toDataURL('image/png'); a.click();
+    showToast('Image downloaded!');
+  } catch(e) { showToast('Download failed', true); }
+}
+
+// ── All-time report ───────────────────────────────────────────────────────────
+
+function renderAllTimeReport() {
+  const wrap = document.getElementById('alltime-canvas-wrap');
+  const empty = document.getElementById('alltime-empty');
+  if (!state.scores.length) { wrap.style.display='none'; empty.style.display='block'; return; }
+
+  empty.style.display='none'; wrap.style.display='block';
+
+  // Per-player totals and stats
+  const byPlayer = {};
+  state.players.forEach(p => { byPlayer[p.id]={p,scores:[],total:0,best:0}; });
+  state.scores.forEach(s => {
+    if (!byPlayer[s.player]) return;
+    byPlayer[s.player].scores.push(s);
+    byPlayer[s.player].total += s.final;
+    if (s.final > byPlayer[s.player].best) byPlayer[s.player].best = s.final;
+  });
+  const ranked = Object.values(byPlayer).filter(x=>x.scores.length).sort((a,b)=>b.total-a.total);
+  const maxTotal = ranked[0]?.total || 1;
+
+  // Weekly winners
+  const byWeek = {};
+  state.scores.forEach(s => {
+    const ws = getWeekStart(s.date);
+    if (!byWeek[ws]) byWeek[ws] = {};
+    if (!byWeek[ws][s.player] || s.final > byWeek[ws][s.player]) {
+      byWeek[ws][s.player] = (byWeek[ws][s.player]||0);
+    }
+    byWeek[ws][s.player] = (byWeek[ws][s.player]||0) + s.final;
+  });
+  const weeklyWinners = Object.entries(byWeek).sort((a,b)=>b[0].localeCompare(a[0])).map(([ws, totals]) => {
+    const winnerId = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0][0];
+    const winnerScore = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0][1];
+    const p = getPlayerById(winnerId);
+    return { ws, p, score: winnerScore };
+  });
+
+  const fmt = d => { const[,m,day]=d.split('-'); return `${parseInt(m)}/${parseInt(day)}`; };
+  const fmtWeek = ws => {
+    const end = new Date(ws + 'T00:00:00'); end.setDate(end.getDate()+6);
+    return `${fmt(ws)}–${fmt(end.toISOString().slice(0,10))}`;
+  };
+
+  const overallChamp = ranked[0];
+  const totalDays = [...new Set(state.scores.map(s=>s.date))].length;
+
+  document.getElementById('alltime-graphic').innerHTML = `
+    <div class="rg-header">
+      <div><div class="rg-title">🌍 Map Tap · All-Time Report</div>
+      <div class="rg-subtitle">${totalDays} day${totalDays!==1?'s':''} played</div></div>
+      <div class="rg-badge">All-Time</div>
+    </div>
+    <div class="rg-divider"></div>
+    ${overallChamp ? `
+      <div class="rg-winner-label">Overall champion</div>
+      <div class="rg-winner"><div class="rg-crown">🏆</div>
+      <div><div class="rg-winner-name">${overallChamp.p.name}</div>
+      <div class="rg-winner-score">${overallChamp.total} pts · ${overallChamp.scores.length} day${overallChamp.scores.length!==1?'s':''} played</div></div></div>
+    ` : ''}
+    <div class="rg-divider"></div>
+    <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Cumulative totals</div>
+    ${ranked.map((r,i) => {
+      const pct = Math.round((r.total/maxTotal)*100);
+      return `<div class="rg-row">
+        <div class="rg-rank">${i+1}</div>
+        <div class="rg-name">${r.p.name}</div>
+        <div class="rg-bar-wrap"><div class="rg-bar" style="width:${pct}%;background:${r.p.color}"></div></div>
+        <div class="rg-score" style="color:${r.p.color}">${r.total}</div>
+      </div>`;
+    }).join('')}
+    <div style="display:flex;gap:1rem;margin-top:1rem;flex-wrap:wrap;">
+      ${ranked.map(r => `
+        <div style="background:var(--surface2);border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">
+          <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px;">Best day · ${r.p.name}</div>
+          <div style="font-size:1.1rem;font-weight:700;font-family:var(--mono);color:${r.p.color}">${r.best}</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">${r.scores.length} day${r.scores.length!==1?'s':''} played · avg ${Math.round(r.total/r.scores.length)}</div>
+        </div>
+      `).join('')}
+    </div>
+    ${weeklyWinners.length ? `
+      <div class="rg-divider"></div>
+      <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Weekly winners</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${weeklyWinners.map(w => `
+          <div style="display:flex;align-items:center;gap:10px;font-size:.85rem;">
+            <div style="color:var(--muted);min-width:90px;">${fmtWeek(w.ws)}</div>
+            <div style="width:8px;height:8px;border-radius:50%;background:${w.p.color};flex-shrink:0"></div>
+            <div style="font-weight:600;color:${w.p.color}">${w.p.name}</div>
+            <div style="font-family:var(--mono);font-size:.8rem;color:var(--muted);margin-left:auto">${w.score} pts</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+    <div class="rg-footer">maptap.gg · Map Tap Tracker</div>
+  `;
+}
+
+async function downloadAllTimeReport() {
+  const el = document.getElementById('alltime-graphic');
+  if (!el.innerHTML) { showToast('No data to download', true); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor:'#0f1117', scale:2 });
+    const a = document.createElement('a');
+    a.download = 'maptap-alltime-report.png'; a.href = canvas.toDataURL('image/png'); a.click();
     showToast('Image downloaded!');
   } catch(e) { showToast('Download failed', true); }
 }
