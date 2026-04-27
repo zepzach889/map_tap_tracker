@@ -746,7 +746,16 @@ async function downloadReport() {
   const el = document.getElementById('report-graphic');
   if (!el.innerHTML) { showToast('Generate a report first', true); return; }
   try {
-    const canvas = await html2canvas(el, { backgroundColor:'#0f1117', scale:2 });
+    const canvas = await html2canvas(el, {
+      backgroundColor: '#0f1117',
+      scale: 2,
+      onclone: doc => {
+        const graphic = doc.getElementById('report-graphic');
+        graphic.style.border = '2px solid #2e3350';
+        graphic.style.borderRadius = '16px';
+        graphic.style.padding = '2rem';
+      }
+    });
     const a = document.createElement('a');
     a.download = 'maptap-weekly-report.png'; a.href = canvas.toDataURL('image/png'); a.click();
     showToast('Image downloaded!');
@@ -755,6 +764,8 @@ async function downloadReport() {
 
 // ── All-time report ───────────────────────────────────────────────────────────
 
+function fmtNum(n) { return n.toLocaleString(); }
+
 function renderAllTimeReport() {
   const wrap = document.getElementById('alltime-canvas-wrap');
   const empty = document.getElementById('alltime-empty');
@@ -762,14 +773,17 @@ function renderAllTimeReport() {
 
   empty.style.display='none'; wrap.style.display='block';
 
-  // Per-player totals and stats
+  // Per-player totals and stats, tracking best day date too
   const byPlayer = {};
-  state.players.forEach(p => { byPlayer[p.id]={p,scores:[],total:0,best:0}; });
+  state.players.forEach(p => { byPlayer[p.id]={p,scores:[],total:0,best:0,bestDate:''}; });
   state.scores.forEach(s => {
     if (!byPlayer[s.player]) return;
     byPlayer[s.player].scores.push(s);
     byPlayer[s.player].total += s.final;
-    if (s.final > byPlayer[s.player].best) byPlayer[s.player].best = s.final;
+    if (s.final > byPlayer[s.player].best) {
+      byPlayer[s.player].best = s.final;
+      byPlayer[s.player].bestDate = s.date;
+    }
   });
   const ranked = Object.values(byPlayer).filter(x=>x.scores.length).sort((a,b)=>b.total-a.total);
   const maxTotal = ranked[0]?.total || 1;
@@ -779,14 +793,10 @@ function renderAllTimeReport() {
   state.scores.forEach(s => {
     const ws = getWeekStart(s.date);
     if (!byWeek[ws]) byWeek[ws] = {};
-    if (!byWeek[ws][s.player] || s.final > byWeek[ws][s.player]) {
-      byWeek[ws][s.player] = (byWeek[ws][s.player]||0);
-    }
     byWeek[ws][s.player] = (byWeek[ws][s.player]||0) + s.final;
   });
   const weeklyWinners = Object.entries(byWeek).sort((a,b)=>b[0].localeCompare(a[0])).map(([ws, totals]) => {
-    const winnerId = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0][0];
-    const winnerScore = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0][1];
+    const [winnerId, winnerScore] = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0];
     const p = getPlayerById(winnerId);
     return { ws, p, score: winnerScore };
   });
@@ -799,6 +809,8 @@ function renderAllTimeReport() {
 
   const overallChamp = ranked[0];
   const totalDays = [...new Set(state.scores.map(s=>s.date))].length;
+  // Points gap between 1st and 2nd
+  const gap = ranked.length >= 2 ? ranked[0].total - ranked[1].total : null;
 
   document.getElementById('alltime-graphic').innerHTML = `
     <div class="rg-header">
@@ -811,25 +823,27 @@ function renderAllTimeReport() {
       <div class="rg-winner-label">Overall champion</div>
       <div class="rg-winner"><div class="rg-crown">🏆</div>
       <div><div class="rg-winner-name">${overallChamp.p.name}</div>
-      <div class="rg-winner-score">${overallChamp.total} pts · ${overallChamp.scores.length} day${overallChamp.scores.length!==1?'s':''} played</div></div></div>
+      <div class="rg-winner-score">${fmtNum(overallChamp.total)} pts · ${overallChamp.scores.length} day${overallChamp.scores.length!==1?'s':''} played${gap!==null ? ` · leads by ${fmtNum(gap)}` : ''}</div>
+      </div></div>
     ` : ''}
     <div class="rg-divider"></div>
     <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Cumulative totals</div>
     ${ranked.map((r,i) => {
       const pct = Math.round((r.total/maxTotal)*100);
+      const trailingBy = i > 0 ? ranked[0].total - r.total : null;
       return `<div class="rg-row">
         <div class="rg-rank">${i+1}</div>
-        <div class="rg-name">${r.p.name}</div>
+        <div class="rg-name">${r.p.name}${trailingBy!==null?`<span style="font-size:.72rem;color:var(--muted);font-weight:400;margin-left:6px">–${fmtNum(trailingBy)}</span>`:''}</div>
         <div class="rg-bar-wrap"><div class="rg-bar" style="width:${pct}%;background:${r.p.color}"></div></div>
-        <div class="rg-score" style="color:${r.p.color}">${r.total}</div>
+        <div class="rg-score" style="color:${r.p.color}">${fmtNum(r.total)}</div>
       </div>`;
     }).join('')}
     <div style="display:flex;gap:1rem;margin-top:1rem;flex-wrap:wrap;">
       ${ranked.map(r => `
         <div style="background:var(--surface2);border-radius:8px;padding:8px 14px;flex:1;min-width:120px;">
           <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px;">Best day · ${r.p.name}</div>
-          <div style="font-size:1.1rem;font-weight:700;font-family:var(--mono);color:${r.p.color}">${r.best}</div>
-          <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">${r.scores.length} day${r.scores.length!==1?'s':''} played · avg ${Math.round(r.total/r.scores.length)}</div>
+          <div style="font-size:1.1rem;font-weight:700;font-family:var(--mono);color:${r.p.color}">${fmtNum(r.best)}</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">${r.bestDate ? fmt(r.bestDate)+' · ' : ''}${r.scores.length} day${r.scores.length!==1?'s':''} played · avg ${fmtNum(Math.round(r.total/r.scores.length))}</div>
         </div>
       `).join('')}
     </div>
@@ -842,7 +856,7 @@ function renderAllTimeReport() {
             <div style="color:var(--muted);min-width:90px;">${fmtWeek(w.ws)}</div>
             <div style="width:8px;height:8px;border-radius:50%;background:${w.p.color};flex-shrink:0"></div>
             <div style="font-weight:600;color:${w.p.color}">${w.p.name}</div>
-            <div style="font-family:var(--mono);font-size:.8rem;color:var(--muted);margin-left:auto">${w.score} pts</div>
+            <div style="font-family:var(--mono);font-size:.8rem;color:var(--muted);margin-left:auto">${fmtNum(w.score)} pts</div>
           </div>
         `).join('')}
       </div>
@@ -855,7 +869,16 @@ async function downloadAllTimeReport() {
   const el = document.getElementById('alltime-graphic');
   if (!el.innerHTML) { showToast('No data to download', true); return; }
   try {
-    const canvas = await html2canvas(el, { backgroundColor:'#0f1117', scale:2 });
+    const canvas = await html2canvas(el, {
+      backgroundColor: '#0f1117',
+      scale: 2,
+      onclone: doc => {
+        const graphic = doc.getElementById('alltime-graphic');
+        graphic.style.border = '2px solid #2e3350';
+        graphic.style.borderRadius = '16px';
+        graphic.style.padding = '2rem';
+      }
+    });
     const a = document.createElement('a');
     a.download = 'maptap-alltime-report.png'; a.href = canvas.toDataURL('image/png'); a.click();
     showToast('Image downloaded!');
