@@ -537,7 +537,8 @@ async function saveScore() {
   const s = [1,2,3,4,5].map(i => parseInt(document.getElementById('s'+i).value)||0);
   const final = parseInt(document.getElementById('final-input').value)||0;
 
-  if (!player || !date) { showToast('Please fill in player and date', true); return; }
+  if (!player) { showToast('Please select a player', true); return; }
+  if (!date) { showToast('Please fill in the date', true); return; }
   if (!final) { showToast('Please enter a final score', true); return; }
 
   setSyncStatus('loading', 'saving…');
@@ -564,6 +565,8 @@ function clearEntry() {
 
 function getPlayerById(id) { return state.players.find(p => p.id === id) || { name: id, color: '#888' }; }
 
+function fmtNum(n) { return Number(n).toLocaleString(); }
+
 function getWeekStart(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   const day = d.getDay();
@@ -572,9 +575,19 @@ function getWeekStart(dateStr) {
 }
 
 function populatePlayerSelect() {
-  document.getElementById('player-select').innerHTML =
+  const sel = document.getElementById('player-select');
+  const lastPlayer = localStorage.getItem('maptap_last_player');
+  sel.innerHTML = '<option value="">— Select player —</option>' +
     state.players.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  if (lastPlayer && state.players.find(p => p.id === lastPlayer)) sel.value = lastPlayer;
 }
+
+// Remember last selected player on change
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('player-select').addEventListener('change', e => {
+    if (e.target.value) localStorage.setItem('maptap_last_player', e.target.value);
+  });
+});
 
 function populateFilters() {
   const fp = document.getElementById('filter-player');
@@ -615,7 +628,7 @@ function renderScoresTable() {
       <td>${r.date}</td>
       <td><span class="player-badge" style="background:${p.color}22;color:${p.color}">${p.name}</span></td>
       <td class="ind-score">${scoreHtml}</td>
-      <td class="final-score" style="color:${p.color}">${r.final}</td>
+      <td class="final-score" style="color:${p.color}">${fmtNum(r.final)}</td>
       <td><button class="del-btn" onclick="deleteScore('${r.id}')">✕</button></td>
     </tr>`;
   }).join('');
@@ -637,9 +650,26 @@ async function deleteScore(id) {
 // ── Leaderboard ───────────────────────────────────────────────────────────────
 
 function getStats(scores) {
-  if (!scores.length) return { total:0, avg:0, best:0, days:0 };
+  if (!scores.length) return { total:0, avg:0, best:0, bestDate:'', days:0, recent:[] };
   const finals = scores.map(s => s.final);
-  return { total: finals.reduce((a,b)=>a+b,0), avg: Math.round(finals.reduce((a,b)=>a+b,0)/finals.length), best: Math.max(...finals), days: scores.length };
+  const sorted = [...scores].sort((a,b) => b.date.localeCompare(a.date));
+  const bestScore = Math.max(...finals);
+  const bestEntry = scores.find(s => s.final === bestScore);
+  return {
+    total: finals.reduce((a,b)=>a+b,0),
+    avg: Math.round(finals.reduce((a,b)=>a+b,0)/finals.length),
+    best: bestScore,
+    bestDate: bestEntry ? bestEntry.date : '',
+    days: scores.length,
+    recent: sorted.slice(0,5)
+  };
+}
+
+let expandedCard = null;
+
+function toggleCard(playerId) {
+  if (expandedCard === playerId) { expandedCard = null; } else { expandedCard = playerId; }
+  renderLeaderboard();
 }
 
 function renderLeaderboard() {
@@ -660,24 +690,70 @@ function renderLeaderboard() {
     return v(b.stats) - v(a.stats);
   });
 
+  const highestScore = scores.length ? Math.max(...scores.map(s=>s.final)) : null;
   document.getElementById('lb-stats').innerHTML = `
     <div class="stat-card"><div class="label">Players</div><div class="value">${state.players.length}</div></div>
-    <div class="stat-card"><div class="label">Highest score</div><div class="value">${scores.length?Math.max(...scores.map(s=>s.final)):'—'}</div></div>
+    <div class="stat-card"><div class="label">Highest score</div><div class="value">${highestScore !== null ? fmtNum(highestScore) : '—'}</div></div>
   `;
 
   const metricVal = s => metric==='total'?s.total:metric==='avg'?s.avg:s.best;
+  const gap = ranked.length >= 2 && ranked[0].stats.days && ranked[1].stats.days
+    ? metricVal(ranked[0].stats) - metricVal(ranked[1].stats) : null;
+  const fmt = d => { if (!d) return ''; const[,m,day]=d.split('-'); return `${parseInt(m)}/${parseInt(day)}`; };
+
   document.getElementById('lb-cards').innerHTML = ranked.map((r,i) => {
     const rc = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
     const val = metricVal(r.stats);
-    const sub = metric==='total'?`${r.stats.days} days played`:metric==='avg'?`over ${r.stats.days} days`:`best day · avg ${r.stats.avg}`;
-    return `<div class="leader-card ${rc}">
+    const isExpanded = expandedCard === r.p.id;
+    const trailingBy = i > 0 && ranked[0].stats.days && r.stats.days
+      ? metricVal(ranked[0].stats) - val : null;
+
+    const expandedHtml = isExpanded && r.stats.days ? `
+      <div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem;width:100%;">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:1rem;">
+          <div style="background:var(--surface2);border-radius:8px;padding:0.65rem 0.85rem;">
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:3px;">Total</div>
+            <div style="font-weight:700;font-family:var(--mono);color:${r.p.color}">${fmtNum(r.stats.total)}</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:0.65rem 0.85rem;">
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:3px;">Average</div>
+            <div style="font-weight:700;font-family:var(--mono);color:${r.p.color}">${fmtNum(r.stats.avg)}</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:0.65rem 0.85rem;">
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:3px;">Best day</div>
+            <div style="font-weight:700;font-family:var(--mono);color:${r.p.color}">${fmtNum(r.stats.best)}</div>
+            <div style="font-size:.68rem;color:var(--muted)">${fmt(r.stats.bestDate)}</div>
+          </div>
+        </div>
+        ${gap !== null && i === 0 ? `<div style="font-size:.8rem;color:var(--muted);margin-bottom:0.75rem;">Leads by <strong style="color:${r.p.color}">${fmtNum(gap)}</strong> pts</div>` : ''}
+        ${trailingBy !== null ? `<div style="font-size:.8rem;color:var(--muted);margin-bottom:0.75rem;">Trailing by <strong style="color:var(--red)">${fmtNum(trailingBy)}</strong> pts</div>` : ''}
+        <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.5rem;">Recent scores</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          ${r.stats.recent.map(s => `
+            <div style="display:flex;align-items:center;gap:0.75rem;font-size:.85rem;">
+              <div style="color:var(--muted);min-width:50px;">${s.date}</div>
+              <div style="display:flex;gap:4px;">
+                ${(s.scores||[]).map(sc => {
+                  const cls = sc>=90?'high':sc>=70?'mid':'low';
+                  return `<span class="score-pill ${cls}" style="padding:1px 7px;font-size:.72rem">${sc}</span>`;
+                }).join('')}
+              </div>
+              <div style="margin-left:auto;font-weight:700;font-family:var(--mono);color:${r.p.color}">${fmtNum(s.final)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : '';
+
+    return `<div class="leader-card ${rc}" style="flex-wrap:wrap;cursor:pointer;" onclick="toggleCard('${r.p.id}')">
       <div class="rank-num">${i+1}</div>
       <div style="width:10px;height:10px;border-radius:50%;background:${r.p.color};flex-shrink:0"></div>
       <div class="leader-name">${r.p.name}</div>
       <div class="leader-stats">
-        <div class="leader-total" style="color:${r.p.color}">${val||'—'}</div>
-        <div class="leader-sub">${r.stats.days?sub:'no scores yet'}</div>
+        <div class="leader-total" style="color:${r.p.color}">${r.stats.days ? fmtNum(val) : '—'}</div>
+        <div class="leader-sub">${r.stats.days ? `${r.stats.days} days played` : 'no scores yet'} ${isExpanded ? '▲' : '▼'}</div>
       </div>
+      ${expandedHtml}
     </div>`;
   }).join('');
 }
@@ -723,13 +799,13 @@ function renderWeeklyReport() {
     ${winner?`<div class="rg-winner-label">Weekly champion</div>
     <div class="rg-winner"><div class="rg-crown">🏆</div>
     <div><div class="rg-winner-name">${winner.p.name}</div>
-    <div class="rg-winner-score">${winner.total} pts · ${winner.scores.length} day${winner.scores.length!==1?'s':''}</div></div></div>`:''}
+    <div class="rg-winner-score">${fmtNum(winner.total)} pts · ${winner.scores.length} day${winner.scores.length!==1?'s':''}</div></div></div>`:''}
     <div class="rg-divider"></div>
     ${ranked.map((r,i)=>{
       const pct=Math.round((r.total/maxTotal)*100);
       return `<div class="rg-row"><div class="rg-rank">${i+1}</div><div class="rg-name">${r.p.name}</div>
       <div class="rg-bar-wrap"><div class="rg-bar" style="width:${pct}%;background:${r.p.color}"></div></div>
-      <div class="rg-score" style="color:${r.p.color}">${r.total}</div></div>`;
+      <div class="rg-score" style="color:${r.p.color}">${fmtNum(r.total)}</div></div>`;
     }).join('')}
     ${days.length?`<div class="rg-divider"></div>
     <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Daily results</div>
